@@ -453,9 +453,82 @@ class Metrics():
             value_list.append(values)
             
         return pd.DataFrame(index=idx_list, data=value_list)
-
     
-   
+    def gbm(self, n_years=10, n_scenarios = 1000, mu= 0.07, sigma = 0.15, steps_per_year = 12, s_0 = 100.0, prices=True) -> pd.DataFrame:
+        """
+        Evolution of Geometric Brownian Motion trajectories, such as for Stock Prices through Monte Carlo
+        :param n_years:  The number of years to generate data for
+        :param n_paths: The number of scenarios/trajectories
+        :param mu: Annualized Drift, e.g. Market Return
+        :param sigma: Annualized Volatility
+        :param steps_per_year: granularity of the simulation
+        :param s_0: initial value
+        :return: a numpy array of n_paths columns and n_years*steps_per_year rows
+        """
+        dt = 1/steps_per_year
+        n_steps = int(n_years*steps_per_year) + 1
+        # without discretization error ...
+        rets_plus_1 = np.random.normal(loc=(1+mu)**dt, scale=(sigma*np.sqrt(dt)), size = (n_steps, n_scenarios))
+        rets_plus_1[0] = 1
+        # from return to prices
+        # prices = s_0*pd.DataFrame(rets_plus_1).cumprod()
+        ret_val = s_0*pd.DataFrame(rets_plus_1).cumprod() if prices else rets_plus_1-1
+        return ret_val
+    
+    def show_gbm(self, n_scenarios, mu, sigma) -> None:
+        """
+        Draw the results of an asset price evolution under the Gemetric Brownian Motion Model
+        """
+        s_0 = 100
+        prices = self.gbm(n_scenarios=n_scenarios, mu=mu, sigma=sigma, s_0=s_0)
+        ax = prices.plot(legend=False, color="indianred", alpha=0.5, linewidth=2, figsize=(12,5))
+        ax.axhline(y=s_0, ls=":", color="black")
+        ax.set_ylim(top=400)
+        # draw a dot at the origin
+        ax.plot(0, s_0, marker="o", color="darkred", alpha=0.2)
+        
+    
+    def show_cppi(self, n_scenarios=50, mu=0.07, sigma=0.15, m=3, floor=0., riskfree_rate=0.03, y_max=100) -> None:
+        """
+        Plot the results of a Monte carlo simulation of CPPI
+        """
+        start = 100
+        sim_rets = self.gbm(n_scenarios=n_scenarios, mu=mu, sigma=sigma, prices=False, steps_per_year=12)
+        risky_rets= pd.DataFrame(sim_rets)
+        # run the backtest
+        btr= self.run_cppi(risky_r=pd.DataFrame(risky_rets), riskfree_rate=riskfree_rate, m=m, start=start, floor=floor)
+        wealth = btr["Wealth"]
+        y_max = wealth.values.max()*y_max/100 # scale max value: effect is to zoom in/out a portion of the plot
+        ax = wealth.plot(legend=False, alpha=0.3, color="indianred", figsize=(12,6))
+        ax.axhline(y=start, ls=":", color="black")
+        ax.axhline(y=start*floor, ls="--", color="red")
+        ax.set_ylim(top=y_max)
+        
+    
+    def show_cppi(self, n_scenarios=50, mu=0.07, sigma=0.15, m=3, floor=0., riskfree_rate=0.03, y_max=100) -> None:
+        """
+        Plot the results of a Monte carlo simulation of CPPI
+        """
+        start = 100
+        sim_rets = self.gbm(n_scenarios=n_scenarios, mu=mu, sigma=sigma, prices=False, steps_per_year=12)
+        risky_rets= pd.DataFrame(sim_rets)
+        # run the backtest
+        btr= self.run_cppi(risky_r=pd.DataFrame(risky_rets), riskfree_rate=riskfree_rate, m=m, start=start, floor=floor)
+        wealth = btr["Wealth"]
+        # scale max value: effect is to zoom in/out a portion of the plot
+        y_max = wealth.values.max()*y_max/100 # scale max value: effect is to zoom in/out a portion of the plot
+        terminal_wealth = wealth.iloc[-1]
+        # Plot!
+        fig, (wealth_ax, hist_ax) = plt.subplots(nrows=1, ncols=2, sharey=True, gridspec_kw={"width_ratios": [3,2]}, figsize=(24,9))
+        plt.subplots_adjust(wspace=0.0)
+        wealth.plot(ax=wealth_ax, legend=False, alpha=0.3, color="indianred")
+        wealth_ax.axhline(y=start, ls=":", color="black")
+        wealth_ax.axhline(y=start*floor, ls="--", color="red")
+        wealth_ax.set_xlim(xmin=0, xmax=120)
+        wealth_ax.set_ylim(top=y_max)
+        
+        terminal_wealth.plot.hist(ax=hist_ax, bins=50, ec="w", fc="indianred", orientation="horizontal")
+        hist_ax.axhline(y=start, ls=":", color="black")
     
     
 #####  Not used anymore ######
@@ -470,3 +543,20 @@ def plot_ef2(metrics, n_points: int, returns: pd.Series, cov: pd.DataFrame):
     vols = [metrics.portfolio_vol(w, cov) for w in weights]
     eff_frontier = pd.DataFrame({"R": rets, "Vol": vols})
     eff_frontier.plot.line(x="Vol",y="R", style=".-");
+    
+
+def show_cppi(n_scenarios=50, mu=0.07, sigma=0.15, m=3, floor=0., riskfree_rate=0.03, y_max=100) -> None:
+    """
+    Plot the results of a Monte carlo simulation of CPPI
+    """
+    start = 100
+    sim_rets = self.gbm(n_scenarios=n_scenarios, mu=mu, sigma=sigma, prices=False, steps_per_year=12)
+    risky_rets= pd.DataFrame(sim_rets)
+    # run the backtest
+    btr= self.run_cppi(risky_r=pd.DataFrame(risky_rets), riskfree_rate=riskfree_rate, m=m, start=start, floor=floor)
+    wealth = btr["Wealth"]
+    y_max = wealth.values.max()*y_max/100 # scale max value: effect is to zoom in/out a portion of the plot
+    ax = wealth.plot(legend=False, alpha=0.3, color="indianred", figsize=(12,6))
+    ax.axhline(y=start, ls=":", color="black")
+    ax.axhline(y=start*floor, ls="--", color="red")
+    ax.set_ylim(top=y_max)
