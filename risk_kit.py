@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import jarque_bera, norm
 from scipy.optimize import minimize
+import math
 import matplotlib.pyplot as plt
 pd.options.display.float_format = '{:.6f}'.format
 plt.rcParams["figure.figsize"] = (10,6)
@@ -355,7 +356,7 @@ class Metrics():
         n_steps = len(dates)
         account_value = start
         floor_value = start*floor
-        peak = start # neede for drawdown constraint
+        peak = start # need for drawdown constraint
         
         if isinstance(risky_r, pd.Series):
             risky_r = pd.DataFrame(risky_r, columns=["R"])
@@ -485,29 +486,11 @@ class Metrics():
         ax.axhline(y=s_0, ls=":", color="black")
         ax.set_ylim(top=400)
         # draw a dot at the origin
-        ax.plot(0, s_0, marker="o", color="darkred", alpha=0.2)
-        
+        ax.plot(0, s_0, marker="o", color="darkred", alpha=0.2)    
     
     def show_cppi(self, n_scenarios=50, mu=0.07, sigma=0.15, m=3, floor=0., riskfree_rate=0.03, y_max=100) -> None:
         """
-        Plot the results of a Monte carlo simulation of CPPI
-        """
-        start = 100
-        sim_rets = self.gbm(n_scenarios=n_scenarios, mu=mu, sigma=sigma, prices=False, steps_per_year=12)
-        risky_rets= pd.DataFrame(sim_rets)
-        # run the backtest
-        btr= self.run_cppi(risky_r=pd.DataFrame(risky_rets), riskfree_rate=riskfree_rate, m=m, start=start, floor=floor)
-        wealth = btr["Wealth"]
-        y_max = wealth.values.max()*y_max/100 # scale max value: effect is to zoom in/out a portion of the plot
-        ax = wealth.plot(legend=False, alpha=0.3, color="indianred", figsize=(12,6))
-        ax.axhline(y=start, ls=":", color="black")
-        ax.axhline(y=start*floor, ls="--", color="red")
-        ax.set_ylim(top=y_max)
-        
-    
-    def show_cppi(self, n_scenarios=50, mu=0.07, sigma=0.15, m=3, floor=0., riskfree_rate=0.03, y_max=100) -> None:
-        """
-        Plot the results of a Monte carlo simulation of CPPI
+        Plot the results of a Monte Carlo simulation of CPPI
         """
         start = 100
         sim_rets = self.gbm(n_scenarios=n_scenarios, mu=mu, sigma=sigma, prices=False, steps_per_year=12)
@@ -517,7 +500,19 @@ class Metrics():
         wealth = btr["Wealth"]
         # scale max value: effect is to zoom in/out a portion of the plot
         y_max = wealth.values.max()*y_max/100 # scale max value: effect is to zoom in/out a portion of the plot
+        # calculate terminal wealth stats
         terminal_wealth = wealth.iloc[-1]
+        tw_mean = terminal_wealth.mean()
+        tw_median = terminal_wealth.median()
+        # build boolean mask
+        failure_mask = np.less(terminal_wealth, start*floor)
+        n_failures = failure_mask.sum()
+        p_fail = n_failures/n_scenarios
+        # this is the equivalent of CVaR. When you go below the floor which is the average shortfall. This is the
+        # conditional mean of all the outcomes that end up below the floor
+        # np.dot is the dot product
+        e_shortfall = np.dot(terminal_wealth-start*floor, failure_mask)/n_failures if n_failures > 0 else 0.0
+        
         # Plot!
         fig, (wealth_ax, hist_ax) = plt.subplots(nrows=1, ncols=2, sharey=True, gridspec_kw={"width_ratios": [3,2]}, figsize=(24,9))
         plt.subplots_adjust(wspace=0.0)
@@ -529,9 +524,99 @@ class Metrics():
         
         terminal_wealth.plot.hist(ax=hist_ax, bins=50, ec="w", fc="indianred", orientation="horizontal")
         hist_ax.axhline(y=start, ls=":", color="black")
+        hist_ax.axhline(y=tw_mean, ls=":", color="blue")
+        hist_ax.axhline(y=tw_median, ls=":", color="purple")
+        hist_ax.annotate(f"Mean: ${int(tw_mean)}", xy=(.65,.95), xycoords="axes fraction", fontsize=18)
+        hist_ax.annotate(f"Median: ${int(tw_median)}", xy=(.65,.9), xycoords="axes fraction", fontsize=18)
+        
+        if floor > 0.01:
+            hist_ax.axhline(y=start*floor, ls="--", color="red", linewidth=3)
+            hist_ax.annotate(f"Violations: {n_failures} {p_fail*100:.2f}%",
+                             xy=(.65,.85), xycoords="axes fraction", fontsize=18)
+            hist_ax.annotate(f"E(shortfall)= ${e_shortfall:2.2f}",
+                             xy=(.65,.8), xycoords="axes fraction", fontsize=18)
+            
+    # Funding Ratio:
+    def funding_ratio(self, assets: float, liabilities: pd.Series, r: float) -> float:
+        """
+        Computes the funding ratio of some assets given liabilities and interest rates
+        """
+        def discount(t: float, r: float) -> float:
+            """
+            Computes the price of a pure discount bond (ZCB) thta pays 1 dollar at time t,
+            given the interest rate r
+            """
+            return 1/(1+r)**t
+        
+        def pv(l:pd.Series, r: float) -> float:
+            """
+            Computes the present value of a sequence of liabilities
+            l is index by the time, and the values are the amounts of each liability
+            returns the present value of the sequence
+            """
+            dates = l.index
+            discounts = discount(dates, r)
+            return (discounts*l).sum()
+        
+        return assets/pv(liabilities, r)
     
+    def inst_to_ann(self, r:float) -> float:
+        """
+        Convert short rate to annualized rate
+        """
+        return np.expm1(r)
+
+    def ann_to_inst(self, r: float) -> float:
+        """
+        Convert annualized to short rate
+        """
+        return np.log1p(r)
+
     
-#####  Not used anymore ######
+    def cir(self, n_years = 10, n_scenarios=1, a=0.05, b=0.03, sigma=0.05, steps_per_year=12, r_0=None):
+        """
+        Generate random interest rate evolution over time using the CIR model
+        b and r_0 are assumed to be the annualized rates, not the short rate
+        and the returned values are the annualized rates as well
+        """
+        if r_0 is None: r_0 = b 
+        r_0 = self.ann_to_inst(r_0)
+        dt = 1/steps_per_year
+        num_steps = int(n_years*steps_per_year) + 1 # because n_years might be a float
+
+        shock = np.random.normal(0, scale=np.sqrt(dt), size=(num_steps, n_scenarios))
+        rates = np.empty_like(shock)
+        rates[0] = r_0
+
+        ## For Price Generation
+        h = math.sqrt(a**2 + 2*sigma**2)
+        prices = np.empty_like(shock)
+        ####
+
+        def price(ttm, r):
+            _A = ((2*h*math.exp((h+a)*ttm/2))/(2*h+(h+a)*(math.exp(h*ttm)-1)))**(2*a*b/sigma**2)
+            _B = (2*(math.exp(h*ttm)-1))/(2*h + (h+a)*(math.exp(h*ttm)-1))
+            _P = _A*np.exp(-_B*r)
+            return _P
+        prices[0] = price(n_years, r_0)
+        ####
+
+        for step in range(1, num_steps):
+            r_t = rates[step-1]
+            d_r_t = a*(b-r_t)*dt + sigma*np.sqrt(r_t)*shock[step]
+            rates[step] = abs(r_t + d_r_t)
+            # generate prices at time t as well ...
+            prices[step] = price(n_years-step*dt, rates[step])
+
+        rates = pd.DataFrame(data=self.inst_to_ann(rates), index=range(num_steps))
+        ### for prices
+        prices = pd.DataFrame(data=prices, index=range(num_steps))
+        ###
+        return rates, prices
+
+           
+    
+##############################  Not used anymore ########################################
 def plot_ef2(metrics, n_points: int, returns: pd.Series, cov: pd.DataFrame):
     """
     Plots the efficient frontier of a two-portfolio asset
@@ -560,3 +645,26 @@ def show_cppi(n_scenarios=50, mu=0.07, sigma=0.15, m=3, floor=0., riskfree_rate=
     ax.axhline(y=start, ls=":", color="black")
     ax.axhline(y=start*floor, ls="--", color="red")
     ax.set_ylim(top=y_max)
+    
+    def cir(self, n_years=10, n_scenarios=1, a=0.05, b=0.03, sigma=0.05, steps_per_year=12, r_0=None) -> pd.DataFrame:
+        """
+        Implements the CIR model for interest rates
+        """
+        if r_0 is None:
+            r_0 = b
+
+        r_0 = self.ann_to_inst(r_0)
+        dt = 1/steps_per_year
+
+        num_steps = int(n_years*steps_per_year) + 1
+        # generating the shock
+        dWt= np.random.normal(0, scale=np.sqrt(dt), size=(num_steps, n_scenarios))
+        rates = np.empty_like(dWt)
+        rates[0] = r_0
+
+        for step in range(1, num_steps):
+            r_t = rates[step-1]
+            d_r_t = a*(b-r_t)*dt + sigma*np.sqrt(r_t)*dWt[step]
+            rates[step] = abs(r_t + d_r_t) # abs is to make sure that it is always positive (it might become negative due to high shock)
+        
+        return pd.DataFrame(data=self.inst_to_ann(rates), index=range(num_steps))
