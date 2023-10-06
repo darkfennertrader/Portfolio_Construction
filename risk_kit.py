@@ -534,31 +534,35 @@ class Metrics():
             hist_ax.annotate(f"Violations: {n_failures} {p_fail*100:.2f}%",
                              xy=(.65,.85), xycoords="axes fraction", fontsize=18)
             hist_ax.annotate(f"E(shortfall)= ${e_shortfall:2.2f}",
+          
                              xy=(.65,.8), xycoords="axes fraction", fontsize=18)
-            
+    
+    def discount(self, t: float, r: float) -> float:
+        """
+        Computes the price of a pure discount bond (ZCB) thta pays 1 dollar at time t,
+        given the interest rate r
+        """
+        return 1/(1+r)**t
+
+    def pv(self, l: pd.Series, r: float) -> float:
+        """
+        Computes the present value of a sequence of liabilities
+        l is index by the time, and the values are the amounts of each liability
+        returns the present value of the sequence
+        """
+        dates = l.index
+        discounts = self.discount(dates, r)
+        return (discounts*l).sum()
+
+    
     # Funding Ratio:
     def funding_ratio(self, assets: float, liabilities: pd.Series, r: float) -> float:
         """
         Computes the funding ratio of some assets given liabilities and interest rates
         """
-        def discount(t: float, r: float) -> float:
-            """
-            Computes the price of a pure discount bond (ZCB) thta pays 1 dollar at time t,
-            given the interest rate r
-            """
-            return 1/(1+r)**t
+
         
-        def pv(l:pd.Series, r: float) -> float:
-            """
-            Computes the present value of a sequence of liabilities
-            l is index by the time, and the values are the amounts of each liability
-            returns the present value of the sequence
-            """
-            dates = l.index
-            discounts = discount(dates, r)
-            return (discounts*l).sum()
-        
-        return assets/pv(liabilities, r)
+        return assets/self.pv(liabilities, r)
     
     def inst_to_ann(self, r:float) -> float:
         """
