@@ -856,7 +856,89 @@ class Metrics:
         d_l = self.macaulay_duration(cf_l, discount_rate)
 
         return (d_l - d_t) / (d_l - d_s)
+    
+    def bt_mix(self, r1: pd.DataFrame, r2: pd.DataFrame, allocator, **kwargs) -> pd.DataFrame:
+        """
+        Given to sets of return and an allocator, create a portfolio that mix between the two over time.
+        Runs a backtest (simulation) of allocating between two sets of returns.
+        r1 and r2 are TxN dataframes where T is the time step and N is the numbero of scenarios.
+        Allocator is a function that takes two sets of returns and allocator specific parameters,
+        and produces an allocation to the first portfolio (the rest of the money is invested
+        in GHP) as a Tx1 dataframe.
+        Returns a TxN dataframe of the resulting N portfolio scenarios
+        """
+        if not r1.shape == r2.shape:
+            raise ValueError("r1 and r2 need to be to same shape")
+            
+        weights = allocator(r1, r2, **kwargs)
+        
+        if not weights.shape == r1.shape:
+            raise ValueError("Allocator returned weights that don't match r1")
+        
+        return weights*r1 + (1-weights)*r2
+    
+    def terminal_values(self, rets: pd.Series) -> float:
+        """
+        Returns the final values of a dolalr at the end of each period for each scenario
+        """
+        return (rets+1).prod()
+    
+    
+    def terminal_stats(self, rets: pd.DataFrame,floor= 0.8, cap=np.inf, name="Stats") -> pd.DataFrame:
+        """
+        Produces Summary Statistics on the terminal values per invested dollar across
+        a range of N scenarios.
+        Rets is a TxN dataframe of returns, where T is the time step (we assume rets is sorted by tine)
+        Returns a 1 column dataframe of summary stats indexed by the stat name
+        params:
+        floor: is the minimum essential goal we want to achieve
+        """
+        terminal_wealth = (rets+1).prod()
+        breach = terminal_wealth < floor
+        reach = terminal_wealth > cap
+        p_breach = breach.mean() if breach.sum()>0 else np.nan
+        p_reach = reach.mean() if reach.sum()>0 else np.nan
+        e_short = (floor - terminal_wealth[breach]).mean() if breach.sum() > 0 else np.nan
+        e_surplus = (cap -terminal_wealth[reach]).mean() if reach.sum() > 0 else np.nan
+        
+        sum_stats = pd.DataFrame.from_dict({
+                            "mean": terminal_wealth.mean(),
+                            "std" : terminal_wealth.std(),
+                            "p_breach": p_breach,
+                            "e_short": e_short,
+                            "p_reach": p_reach,
+                            "e_surplus": e_surplus
+                            }, orient="index", columns = [name])
+        
+        return sum_stats
+        
+        
 
+    
+#################      ALLOCATORS     ############################    
+    
+def fixedmix_allocator(r1: pd.DataFrame, r2: pd.DataFrame, w1: pd.Series, **kwargs) -> pd.DataFrame:
+    """
+    Produces a time series over T steps of allocation between PSP and GHP across N scenarios
+    PSP and GHP are TxN dataframes that represent the returns of the PSP and GHP such that:
+    each column is a scenario
+    each row is the price for a timestep
+    Returns a TxN dataframe of PSP weights
+    """
+    return pd.DataFrame(data=w1, index=r1.index, columns=r1.columns)
+
+def glidepath_allocator(r1: pd.DataFrame, r2: pd.DataFrame, start_glide: float =1, end_glide: float =0) -> pd.DataFrame:
+    """
+    simulate a Target-Date Fund style gradual move from r1 to r2
+    """
+    n_points = r1.shape[0]
+    n_col = r1.shape[1]
+    path = pd.Series(data= np.linspace(start_glide, end_glide, num= n_points))
+    paths = pd.concat([path]*n_col, axis=1)
+    paths.index = r1.index
+    paths.columns = r1.columns
+    return paths
+        
 
 ##############################  Not used anymore ########################################
 def plot_ef2(metrics, n_points: int, returns: pd.Series, cov: pd.DataFrame):
