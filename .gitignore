@@ -1,0 +1,7 @@
+/venv
+/.vscode
+*/data
+/nb
+/__pycache__
+*.ipynb_checkpoints
+*.jpg
