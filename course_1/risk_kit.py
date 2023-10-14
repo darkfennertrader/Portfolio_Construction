@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import jarque_bera, norm
 from scipy.optimize import minimize
+import statsmodels.api as sm
 import math
 import matplotlib.pyplot as plt
 
@@ -30,6 +31,36 @@ def pre_processing_ind():
     return ind
 
 
+def get_ind_file(filetype, ew=False):
+    """
+    Load and format the Ken French 30 Industry Portfolios files
+    """
+    known_types = ["returns", "nfirms", "size"]
+    if filetype not in known_types:
+        raise ValueError(f"filetype must be one of:{','.join(known_types)}")
+    if filetype is "returns":
+        name = "ew_rets" if ew else "vw_rets"
+        divisor = 100
+    elif filetype is "nfirms":
+        name = "nfirms"
+        divisor = 1
+    elif filetype is "size":
+        name = "size"
+        divisor = 1
+                         
+    ind = pd.read_csv(f"data/ind30_m_{name}.csv", header=0, index_col=0)/divisor
+    ind.index = pd.to_datetime(ind.index, format="%Y%m").to_period('M')
+    ind.columns = ind.columns.str.strip()
+    return ind
+
+
+def get_ind_nfirms(n_inds=30):
+    """
+    Load and format the Ken French 30 Industry Portfolios Average number of Firms
+    """
+    return get_ind_file("nfirms", n_inds=n_inds)
+
+
 def get_ind30_size():
     """ """
     ind = pd.read_csv("data/ind30_m_size.csv", header=0, index_col=0)
@@ -49,6 +80,30 @@ def get_ind30_nfirms():
     ind.columns = ind.columns.str.strip()
     return ind
 
+def get_fff_returns():
+    """
+    Load the Fama-French Research Factor Monthly Dataset
+    """
+    rets = pd.read_csv("data/F-F_Research_Data_Factors_m.csv",
+                       header=0, index_col=0, na_values=-99.99)/100
+    rets.index = pd.to_datetime(rets.index, format="%Y%m").to_period('M')
+    return rets
+
+def get_ind_market_caps(n_inds=30, weights=False):
+    """
+    Load the industry portfolio data and derive the market caps
+    """
+    ind_nfirms = get_ind_nfirms(n_inds=n_inds)
+    ind_size = get_ind_size(n_inds=n_inds)
+    ind_mktcap = ind_nfirms * ind_size
+    if weights:
+        total_mktcap = ind_mktcap.sum(axis=1)
+        ind_capweight = ind_mktcap.divide(total_mktcap, axis="rows")
+        return ind_capweight
+    #else
+    return ind_mktcap
+
+
 
 class Metrics:
     """
@@ -58,6 +113,79 @@ class Metrics:
 
     def __init__(self, starting_amount: int = 1):
         self.starting_amount = starting_amount
+
+    def backtest_ws(self, r, weighting, estimation_window=60, **kwargs):
+        """
+        Backtests a given weighting scheme, given some parameters:
+        r : asset returns to use to build the portfolio
+        estimation_window: the window to use to estimate parameters
+        weighting: the weighting scheme to use, must be a function that takes "r", and a variable number of keyword-value arguments
+        """
+        n_periods = r.shape[0]
+        # return windows
+        windows = [(start, start+estimation_window) for start in range(n_periods-estimation_window+1)]
+        weights = [weighting(r.iloc[win[0]:win[1]], **kwargs) for win in windows]
+        # convert list of weights to DataFrame
+        weights = pd.DataFrame(weights, index=r.iloc[estimation_window-1:].index, columns=r.columns)
+        # return weights
+        returns = (weights * r).sum(axis="columns",  min_count=1) #mincount is to generate NAs if all inputs are NAs
+        return returns
+
+    def regress(self, dependent_variable, explanatory_variables, alpha=True):
+        """
+        Runs a linear regression to decompose the dependent variable into the explanatory variables
+        returns an object of type statsmodel's RegressionResults on which you can call
+           .summary() to print a full summary
+           .params for the coefficients
+           .tvalues and .pvalues for the significance levels
+           .rsquared_adj and .rsquared for quality of fit
+        """
+        if alpha:
+            explanatory_variables = explanatory_variables.copy()
+            explanatory_variables["Alpha"] = 1
+
+        lm = sm.OLS(dependent_variable, explanatory_variables).fit()
+        return lm
+    
+    def style_analysis(self, dependent_variable, explanatory_variables):
+        """
+        Returns the optimal weights that minimizes the Tracking error between
+        a portfolio of the explanatory variables and the dependent variable
+        """
+        n = explanatory_variables.shape[1]
+        init_guess = np.repeat(1/n, n)
+        bounds = ((0.0, 1.0),) * n # an N-tuple of 2-tuples!
+        # construct the constraints
+        weights_sum_to_1 = {'type': 'eq',
+                            'fun': lambda weights: np.sum(weights) - 1
+        }
+        solution = minimize(self.portfolio_tracking_error, init_guess,
+                           args=(dependent_variable, explanatory_variables,), method='SLSQP',
+                           options={'disp': False},
+                           constraints=(weights_sum_to_1,),
+                           bounds=bounds)
+        weights = pd.Series(solution.x, index=explanatory_variables.columns)
+        return weights
+    
+    def portfolio_tracking_error(self, weights, ref_r, bb_r):
+        """
+        returns the tracking error between the reference returns
+        and a portfolio of building block returns held with given weights
+        """
+        return self.tracking_error(ref_r, (weights*bb_r).sum(axis=1))
+    
+    def tracking_error(self, r_a, r_b):
+        """
+        Returns the Tracking Error between the two return series
+        """
+        return np.sqrt(((r_a - r_b)**2).sum())
+
+    
+    def compound(self, r: pd.Series) -> pd.Series:
+        """
+        returns the result of compounding the set of returns in r
+        """
+        return np.expm1(np.log1p(r).sum())
 
     def portfolio_return(self, weights: np.array, returns: pd.Series):
         """
@@ -916,8 +1044,44 @@ class Metrics:
                             }, orient="index", columns = [name])
         
         return sum_stats
-        
-        
+    
+    
+    
+#################      WEIHTING SCHEMES    ############################
+
+def weight_ew_cap_teth(r, cap_weights=None, max_cw_mult=None, microcap_threshold=None, **kwargs):
+    """
+    Returns the weights of the EW portfolio based on the asset returns "r" as a DataFrame
+    If supplied a set of capweights and a capweight tether, it is applied and reweighted 
+    """
+    n = len(r.columns)
+    ew = pd.Series(1/n, index=r.columns)
+    if cap_weights is not None:
+        cw = cap_weights.loc[r.index[0]] # starting cap weight
+        ## exclude microcaps
+        if microcap_threshold is not None and microcap_threshold > 0:
+            microcap = cw < microcap_threshold
+            ew[microcap] = 0
+            ew = ew/ew.sum()
+        #limit weight to a multiple of capweight
+        if max_cw_mult is not None and max_cw_mult > 0:
+            ew = np.minimum(ew, cw*max_cw_mult)
+            ew = ew/ew.sum() #reweight
+    return ew
+   
+
+def weight_ew(r, **kwargs):
+    """
+    Returns the weights of the EW portfolio based on the asset returns "r" as a DataFrame
+    """
+    n = len(r.columns)
+    return pd.Series(1/n, index=r.columns)
+
+def weight_cw(r, cap_weights, **kwargs):
+    """
+    Returns the weights of the CW portfolio based on the time series of capweights
+    """
+    return cap_weights.loc[r.index[1]]
 
     
 #################      ALLOCATORS     ############################    
