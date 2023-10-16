@@ -123,10 +123,11 @@ class Metrics:
         """
         n_periods = r.shape[0]
         # return windows
-        windows = [(start, start+estimation_window) for start in range(n_periods-estimation_window+1)]
+        windows = [(start, start+estimation_window) for start in range(n_periods-estimation_window)]
+        #print(type(weighting))
         weights = [weighting(r.iloc[win[0]:win[1]], **kwargs) for win in windows]
         # convert list of weights to DataFrame
-        weights = pd.DataFrame(weights, index=r.iloc[estimation_window-1:].index, columns=r.columns)
+        weights = pd.DataFrame(weights, index=r.iloc[estimation_window:].index, columns=r.columns)
         # return weights
         returns = (weights * r).sum(axis="columns",  min_count=1) #mincount is to generate NAs if all inputs are NAs
         return returns
@@ -1047,7 +1048,7 @@ class Metrics:
     
     
     
-#################      WEIHTING SCHEMES    ############################
+#################      WEIGHTING SCHEMES    ############################
 
 def weight_ew_cap_teth(r, cap_weights=None, max_cw_mult=None, microcap_threshold=None, **kwargs):
     """
@@ -1081,9 +1082,10 @@ def weight_cw(r, cap_weights, **kwargs):
     """
     Returns the weights of the CW portfolio based on the time series of capweights
     """
-    return cap_weights.loc[r.index[1]]
+    w = cap_weights.loc[r.index[1]]
+    return w/w.sum()
 
-    
+
 #################      ALLOCATORS     ############################    
     
 def fixedmix_allocator(r1: pd.DataFrame, r2: pd.DataFrame, w1: pd.Series, **kwargs) -> pd.DataFrame:

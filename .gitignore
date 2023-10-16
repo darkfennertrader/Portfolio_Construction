@@ -1,7 +1,8 @@
 /venv
 /.vscode
 */data
-/nb
-/__pycache__
+*/*/data
 *.ipynb_checkpoints
 *.jpg
+*.pyc
+course_1/__pycache__/*
