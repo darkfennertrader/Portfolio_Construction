@@ -6,3 +6,5 @@
 *.jpg
 *.pyc
 course_1/__pycache__/*
+*.csv
+*.xlsx
